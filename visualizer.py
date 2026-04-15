@@ -63,37 +63,64 @@ def get_status_source_for_limb(limb: str, limb_to_device: dict):
     return limb_to_device.get(source_limb), True
 
 
+def _get_heart_font(size: int):
+    for font_name in (
+        "DejaVu Sans",
+        "Arial Unicode MS",
+        "Apple Color Emoji",
+        "Segoe UI Emoji",
+        "Noto Color Emoji",
+        "Arial",
+    ):
+        font = pygame.font.SysFont(font_name, size, bold=True)
+        if font.size("♥")[0] > 0:
+            return font
+
+    return pygame.font.SysFont("Arial", size, bold=True)
+
+
+def _draw_fallback_heart(screen, center, size: int, color):
+    x, y = center
+    scale = max(0.7, size / 28.0)
+    radius = int(6 * scale)
+    left = (int(x - 6 * scale), int(y - 3 * scale))
+    right = (int(x + 6 * scale), int(y - 3 * scale))
+    bottom = (int(x), int(y + 7 * scale))
+
+    pygame.draw.circle(screen, color, left, radius)
+    pygame.draw.circle(screen, color, right, radius)
+    pygame.draw.polygon(
+        screen,
+        color,
+        [
+            (int(x - 12 * scale), int(y - 1 * scale)),
+            (int(x + 12 * scale), int(y - 1 * scale)),
+            bottom,
+        ],
+    )
+
+
 def draw_heart(screen, center, bpm, connected, stale):
     x, y = center
 
-    if not connected or stale or bpm is None:
-        color = (140, 80, 80)
-        label = "--"
-        scale = 1.0
-    else:
-        color = (255, 80, 100)
+    if bpm is not None and connected and not stale:
         label = str(bpm)
-        pulse = 1.0 + 0.08 * math.sin(time.time() * max(0.8, bpm / 30.0))
-        scale = pulse
+    else:
+        label = "--"
 
-    r = 12 * scale
-    left = (x - 10 * scale, y - 6 * scale)
-    right = (x + 10 * scale, y - 6 * scale)
-    bottom = (x, y + 18 * scale)
+    heart_size = 120
+    heart_font = _get_heart_font(heart_size)
+    heart_text = heart_font.render("♥", True, (255, 70, 90))
+    if heart_text.get_width() > 0 and heart_text.get_height() > 0:
+        heart_rect = heart_text.get_rect(center=(x, y))
+        screen.blit(heart_text, heart_rect)
+    else:
+        _draw_fallback_heart(screen, (x, y), heart_size, (255, 70, 90))
 
-    pygame.draw.circle(screen, color, (int(left[0]), int(left[1])), int(r))
-    pygame.draw.circle(screen, color, (int(right[0]), int(right[1])), int(r))
-    points = [
-        (x - 22 * scale, y),
-        (x + 22 * scale, y),
-        bottom,
-    ]
-    pygame.draw.polygon(screen, color, points)
-
-    font = pygame.font.SysFont("Arial", 18, bold=True)
-    text = font.render(label, True, (255, 80, 100))
-    rect = text.get_rect(center=(x, y + 40))
-    screen.blit(text, rect)
+    bpm_font = pygame.font.SysFont("Arial", 24, bold=True)
+    bpm_text = bpm_font.render(label, True, (0, 0, 0))
+    bpm_rect = bpm_text.get_rect(center=(x, y))
+    screen.blit(bpm_text, bpm_rect)
 
 
 def update_hr_history(hr_history: deque, now: float, hr_snapshot: dict, hr_stale: bool, history_window_sec: float):
