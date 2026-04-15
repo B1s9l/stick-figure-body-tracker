@@ -19,6 +19,8 @@ from config import (
     LIMB_LENGTHS,
     DEVICE_TO_LIMB,
     ALL_LIMBS,
+    FOUR_PHONE_MODE,
+    LEFT_LIMB_MIRROR_SOURCE,
     HR_STALE_TIMEOUT_SEC,
 )
 from brain import update_angles
@@ -39,6 +41,21 @@ def draw_text(screen, text, x, y, font, color=TEXT_COLOR):
 
 def is_connected(sample, now: float) -> bool:
     return sample is not None and (now - sample.last_seen) < 2.0
+
+
+def get_status_source_for_limb(limb: str, limb_to_device: dict):
+    device_id = limb_to_device.get(limb)
+    if device_id:
+        return device_id, False
+
+    if not FOUR_PHONE_MODE:
+        return None, False
+
+    source_limb = LEFT_LIMB_MIRROR_SOURCE.get(limb)
+    if source_limb is None:
+        return None, False
+
+    return limb_to_device.get(source_limb), True
 
 
 def draw_heart(screen, center, bpm, connected, stale):
@@ -88,15 +105,23 @@ def draw_status_panel(screen, font_small, font_medium, app_state: AppState):
     limb_to_device = {limb: device for device, limb in DEVICE_TO_LIMB.items()}
 
     for limb in ALL_LIMBS:
-        device_id = limb_to_device.get(limb)
+        device_id, is_mirrored = get_status_source_for_limb(limb, limb_to_device)
         sample = snapshot.get(device_id) if device_id else None
         connected = is_connected(sample, now)
 
         if connected:
-            text = f"{limb} | {device_id} | pitch={sample.pitch_rad:+.3f}"
+            if is_mirrored:
+                source_limb = LEFT_LIMB_MIRROR_SOURCE[limb]
+                text = f"{limb} | mirror({source_limb}) via {device_id} | pitch={sample.pitch_rad:+.3f}"
+            else:
+                text = f"{limb} | {device_id} | pitch={sample.pitch_rad:+.3f}"
             color = CONNECTED_COLOR
         else:
-            text = f"{limb}"
+            if is_mirrored:
+                source_limb = LEFT_LIMB_MIRROR_SOURCE[limb]
+                text = f"{limb} | mirror({source_limb})"
+            else:
+                text = f"{limb}"
             color = DISCONNECTED_COLOR
 
         draw_text(screen, text, panel_x, y, font_small, color)

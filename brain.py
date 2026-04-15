@@ -1,6 +1,8 @@
 from config import (
     DEVICE_TO_LIMB,
     ALL_LIMBS,
+    FOUR_PHONE_MODE,
+    LEFT_LIMB_MIRROR_SOURCE,
     PITCH_MIN,
     PITCH_MAX,
     SMOOTHING_ALPHA,
@@ -22,6 +24,21 @@ def get_device_id_for_limb(limb: str):
         if mapped_limb == limb:
             return device_id
     return None
+
+
+def get_source_device_id_for_limb(limb: str):
+    device_id = get_device_id_for_limb(limb)
+    if device_id is not None:
+        return device_id
+
+    if not FOUR_PHONE_MODE:
+        return None
+
+    source_limb = LEFT_LIMB_MIRROR_SOURCE.get(limb)
+    if source_limb is None:
+        return None
+
+    return get_device_id_for_limb(source_limb)
 
 
 def map_pitch_to_halfcircle_deg(pitch_rad: float) -> float:
@@ -86,7 +103,7 @@ def update_angles(app_state: AppState):
     snapshot = app_state.snapshot_devices()
 
     for limb in ALL_LIMBS:
-        device_id = get_device_id_for_limb(limb)
+        device_id = get_source_device_id_for_limb(limb)
         if device_id is None:
             continue
 

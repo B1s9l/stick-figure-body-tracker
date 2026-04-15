@@ -7,6 +7,10 @@ FPS = 60
 
 SHOW_RAW_PACKETS = False
 
+# When enabled, only right-side limb device mappings are expected and left-side
+# limbs are driven by mirrored right-side phone pitch values.
+FOUR_PHONE_MODE = True
+
 SMOOTHING_ALPHA = 0.10
 ANGLE_DEADBAND_DEG = 0.6
 FILTER_INTERVAL_SEC = 1.0 / 60.0
@@ -31,14 +35,24 @@ TEXT_COLOR = (230, 230, 230)
 CONNECTED_COLOR = (120, 255, 120)
 DISCONNECTED_COLOR = (220, 90, 90)
 
+# In FOUR_PHONE_MODE, each left limb uses the same source sample as the mapped
+# right limb listed below.
+LEFT_LIMB_MIRROR_SOURCE = {
+    "upperarm_left": "upperarm_right",
+    "forearm_left": "forearm_right",
+    "upperleg_left": "upperleg_right",
+    "lowerleg_left": "lowerleg_right",
+}
+
 DEVICE_TO_LIMB = {
     "iphone_forearm_right": "forearm_right",
     # "iphone_upperarm_right": "upperarm_right",
-    # "iphone_upperarm_left": "upperarm_left",
-    # "iphone_forearm_left": "forearm_left",
-    
     # "iphone_upperleg_right": "upperleg_right",
     # "iphone_lowerleg_right": "lowerleg_right",
+
+    # Optional direct left-limb mappings (used when FOUR_PHONE_MODE is False):
+    # "iphone_upperarm_left": "upperarm_left",
+    # "iphone_forearm_left": "forearm_left",
     # "iphone_upperleg_left": "upperleg_left",
     # "iphone_lowerleg_left": "lowerleg_left",
 }

@@ -129,6 +129,24 @@ DEVICE_TO_LIMB = {
 
 Each phone must have a unique `deviceID`.
 
+### Four-phone mirrored mode
+
+If you only want 4 phones, enable this in `config.py`:
+
+```python
+FOUR_PHONE_MODE = True
+```
+
+In this mode, configure only these right-side limb mappings in `DEVICE_TO_LIMB`:
+
+* `upperarm_right`
+* `forearm_right`
+* `upperleg_right`
+* `lowerleg_right`
+
+Left-side limbs are automatically mirrored from their corresponding right-side
+source limbs (`upperarm_left <- upperarm_right`, etc.).
+
 ---
 
 ## 7. Set the Garmin HRM address
