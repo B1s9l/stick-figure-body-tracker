@@ -23,8 +23,20 @@ def create_flask_app(app_state: AppState) -> Flask:
 
         device_id = payload.get("deviceID", "unknown")
         pitch_rad = to_float(payload, "motionPitch", 0.0)
+        latitude = to_float(payload, "latitude", None)
+        longitude = to_float(payload, "longitude", None)
 
-        app_state.update_device_sample(device_id, pitch_rad)
+        if latitude is None:
+            latitude = to_float(payload, "locationLatitude", None)
+        if longitude is None:
+            longitude = to_float(payload, "locationLongitude", None)
+
+        if latitude is None and isinstance(payload.get("location"), dict):
+            latitude = to_float(payload["location"], "latitude", None)
+        if longitude is None and isinstance(payload.get("location"), dict):
+            longitude = to_float(payload["location"], "longitude", None)
+
+        app_state.update_device_sample(device_id, pitch_rad, latitude, longitude)
         return "ok"
 
     return app
