@@ -1,6 +1,7 @@
 import threading
 import time
 import math
+import uuid
 from dataclasses import dataclass
 from typing import Dict, Optional, List, Tuple
 
@@ -46,6 +47,7 @@ class AppState:
         self.gps_simulation_active: bool = False
         self.gps_simulated_coord: Optional[Tuple[float, float]] = None
         self.gps_coordinate_history: List[Tuple[float, float]] = []
+        self.markers: List[Dict] = []
         self.gps_last_calc_ts: Optional[float] = None
         self.gps_last_calc_coord: Optional[Tuple[float, float]] = None
         self.gps_speed_mps: Optional[float] = None
@@ -90,6 +92,25 @@ class AppState:
         self.gps_last_calc_coord = None
         self.gps_speed_mps = None
         self.gps_accel_mps2 = None
+
+    def _current_gps_coords_locked(self):
+        if self.gps_simulation_active and self.gps_simulated_coord is not None:
+            return self.gps_simulated_coord
+
+        self._update_gps_provider_locked()
+        if self.gps_provider_device is None:
+            return None
+
+        sample = self.latest_by_device.get(self.gps_provider_device)
+        if sample is None or sample.latitude is None or sample.longitude is None:
+            if self.gps_coordinate_history:
+                return self.gps_coordinate_history[-1]
+            return None
+
+        return sample.latitude, sample.longitude
+
+    def _markers_copy_locked(self):
+        return [dict(marker) for marker in self.markers]
 
     @staticmethod
     def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -205,6 +226,26 @@ class AppState:
                     self.gps_coordinate_history.append(coordinate)
                 self._update_gps_metrics_locked(ts, latitude, longitude)
 
+    def create_marker(self, name: str = "Unlabeled marker"):
+        with self.lock:
+            ts = time.time()
+            coordinates = self._current_gps_coords_locked()
+            marker = {
+                "ts": ts,
+                "type": "marker",
+                "marker_id": uuid.uuid4().hex,
+                "name": name,
+                "latitude": coordinates[0] if coordinates is not None else None,
+                "longitude": coordinates[1] if coordinates is not None else None,
+            }
+            self.markers.append(marker)
+            self._log_event_locked(ts, "marker", marker)
+            return marker
+
+    def get_markers_copy(self):
+        with self.lock:
+            return self._markers_copy_locked()
+
     def start_gps_simulation(self, latitude: float, longitude: float):
         with self.lock:
             self.gps_simulation_active = True
@@ -286,6 +327,7 @@ class AppState:
                     "latitude": latitude,
                     "longitude": longitude,
                     "history": list(self.gps_coordinate_history),
+                    "markers": self._markers_copy_locked(),
                     "speed_mps": self.gps_speed_mps,
                     "speed_kmh": self.gps_speed_mps * 3.6 if self.gps_speed_mps is not None else None,
                     "accel_mps2": self.gps_accel_mps2,
@@ -306,6 +348,7 @@ class AppState:
                 "latitude": latitude,
                 "longitude": longitude,
                 "history": list(self.gps_coordinate_history),
+                "markers": self._markers_copy_locked(),
                 "speed_mps": self.gps_speed_mps,
                 "speed_kmh": self.gps_speed_mps * 3.6 if self.gps_speed_mps is not None else None,
                 "accel_mps2": self.gps_accel_mps2,

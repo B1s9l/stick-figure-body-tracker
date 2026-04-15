@@ -3,7 +3,7 @@ import os
 import queue
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 
 from config import LOG_FILE_EXTENSION, LOG_FILE_PREFIX, LOG_QUEUE_MAXSIZE, LOGS_DIR
 
@@ -109,3 +109,13 @@ class SessionLogger:
     def current_log_path(self) -> Optional[str]:
         with self._lock:
             return self._current_log_path
+
+    @staticmethod
+    def rewrite_jsonl(path: str, events: Iterable[Dict]):
+        temp_path = f"{path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            for event in events:
+                handle.write(json.dumps(event, separators=(",", ":"), ensure_ascii=True))
+                handle.write("\n")
+
+        os.replace(temp_path, path)

@@ -400,6 +400,8 @@ Possible future improvements:
 * constraints between upper/lower limb segments
 * inverse kinematics
 * recording sessions to file
+* live markers that capture the latest GPS point at click time
+* replay marker editing with rename/delete/new-marker controls
 * live plotting/debug views
 * remote configuration UI
 

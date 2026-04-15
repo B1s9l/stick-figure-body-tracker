@@ -77,15 +77,16 @@ def launch_replay_process(log_file_path: str = ""):
 
 
 def draw_recording_controls(screen, app_state: AppState):
-    panel_x = WINDOW_W - 340
-    panel_y = 20
+    panel_h = 132
+    panel_x = 20
+    panel_y = max(20, (WINDOW_H // 2) - (panel_h // 2))
     panel_w = 320
-    panel_h = 92
     panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
 
     button_h = 32
     record_rect = pygame.Rect(panel_x + 12, panel_y + 10, 140, button_h)
     logs_rect = pygame.Rect(panel_x + 168, panel_y + 10, 140, button_h)
+    marker_rect = pygame.Rect(panel_x + 12, panel_y + 52, 296, button_h)
 
     pygame.draw.rect(screen, (20, 20, 20), panel_rect)
     pygame.draw.rect(screen, (180, 180, 180), panel_rect, width=2)
@@ -103,10 +104,15 @@ def draw_recording_controls(screen, app_state: AppState):
     pygame.draw.rect(screen, logs_bg, logs_rect, border_radius=4)
     pygame.draw.rect(screen, (220, 220, 220), logs_rect, width=1, border_radius=4)
 
+    marker_bg = (70, 120, 80)
+    pygame.draw.rect(screen, marker_bg, marker_rect, border_radius=4)
+    pygame.draw.rect(screen, (220, 220, 220), marker_rect, width=1, border_radius=4)
+
     button_font = pygame.font.SysFont("Arial", 14, bold=True)
     meta_font = pygame.font.SysFont("Arial", 12)
     screen.blit(button_font.render(record_label, True, (245, 245, 245)), (record_rect.x + 45, record_rect.y + 7))
     screen.blit(button_font.render("See logs", True, (245, 245, 245)), (logs_rect.x + 34, logs_rect.y + 7))
+    screen.blit(button_font.render("Set marker", True, (245, 245, 245)), (marker_rect.x + 100, marker_rect.y + 7))
 
     if log_path:
         short_path = os.path.basename(log_path)
@@ -116,9 +122,9 @@ def draw_recording_controls(screen, app_state: AppState):
         meta_text = "no log file"
         meta_color = (190, 190, 190)
 
-    screen.blit(meta_font.render(meta_text, True, meta_color), (panel_x + 12, panel_y + 56))
+    screen.blit(meta_font.render(meta_text, True, meta_color), (panel_x + 12, panel_y + 94))
 
-    return record_rect, logs_rect
+    return record_rect, logs_rect, marker_rect
 
 
 def endpoint_from_angle(start, length, angle_deg):
@@ -363,9 +369,14 @@ def draw_gps_map(screen, app_state: AppState, now: float, sim_state="off"):
     latitude = gps["latitude"]
     longitude = gps["longitude"]
     history = gps["history"]
+    markers = gps.get("markers", [])
     speed_mps = gps.get("speed_mps")
     speed_kmh = gps.get("speed_kmh")
     accel_mps2 = gps.get("accel_mps2")
+    center_lat = latitude
+    center_lon = longitude
+    if (center_lat is None or center_lon is None) and history:
+        center_lat, center_lon = history[-1]
 
     now_connected = provider == "simulation"
     if provider is not None and provider != "simulation":
@@ -386,14 +397,24 @@ def draw_gps_map(screen, app_state: AppState, now: float, sim_state="off"):
     sim_y = clear_y
     sim_rect_screen = (graph_x + sim_x, graph_y + sim_y, sim_w, sim_h)
 
-    if latitude is not None and longitude is not None:
+    if center_lat is not None and center_lon is not None:
         if len(history) > GPS_HISTORY_MAX_POINTS:
             history = history[-GPS_HISTORY_MAX_POINTS:]
 
         for lat, lon in history:
-            point = _map_point_from_latlon(lat, lon, latitude, longitude, graph_w, graph_h)
+            point = _map_point_from_latlon(lat, lon, center_lat, center_lon, graph_w, graph_h)
             if point is not None:
                 pygame.draw.circle(overlay, history_color, point, 1)
+
+        for marker in markers:
+            marker_lat = marker.get("latitude")
+            marker_lon = marker.get("longitude")
+            if marker_lat is None or marker_lon is None:
+                continue
+            point = _map_point_from_latlon(marker_lat, marker_lon, center_lat, center_lon, graph_w, graph_h)
+            if point is not None:
+                pygame.draw.circle(overlay, (80, 220, 110), point, 4)
+                pygame.draw.circle(overlay, (220, 255, 230), point, 4, width=1)
 
         pygame.draw.circle(overlay, center_color, (cx, cy), 4)
 
@@ -684,6 +705,7 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
     history_window_sec = 10.0
     record_rect = None
     logs_rect = None
+    marker_rect = None
     clear_gps_rect = None
     sim_gps_rect = None
     sim_state = "off"
@@ -721,6 +743,12 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
                         log_files = list_log_files()
                         selected = log_files[0] if log_files else ""
                         launch_replay_process(selected)
+                        continue
+
+                if marker_rect is not None:
+                    x, y, w, h = marker_rect
+                    if x <= mx <= x + w and y <= my <= y + h:
+                        app_state.create_marker()
                         continue
 
                 if clear_gps_rect is not None:
@@ -767,7 +795,7 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
 
         screen.fill(BG_COLOR)
         draw_stick_figure(screen, app_state)
-        record_rect, logs_rect = draw_recording_controls(screen, app_state)
+        record_rect, logs_rect, marker_rect = draw_recording_controls(screen, app_state)
         draw_status_panel(screen, font_small, font_medium, app_state)
 
         clear_gps_rect, sim_gps_rect = draw_gps_map(
