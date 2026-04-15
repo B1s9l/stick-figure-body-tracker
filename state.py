@@ -39,11 +39,19 @@ class AppState:
         self.hr_status_text: str = "not connected"
 
         self.gps_provider_device: Optional[str] = None
+        self.gps_simulation_active: bool = False
+        self.gps_simulated_coord: Optional[Tuple[float, float]] = None
         self.gps_coordinate_history: List[Tuple[float, float]] = []
         self.gps_last_calc_ts: Optional[float] = None
         self.gps_last_calc_coord: Optional[Tuple[float, float]] = None
         self.gps_speed_mps: Optional[float] = None
         self.gps_accel_mps2: Optional[float] = None
+
+    def _reset_gps_metrics_locked(self):
+        self.gps_last_calc_ts = None
+        self.gps_last_calc_coord = None
+        self.gps_speed_mps = None
+        self.gps_accel_mps2 = None
 
     @staticmethod
     def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -64,7 +72,12 @@ class AppState:
             return
 
         dt = ts - self.gps_last_calc_ts
-        if dt < GPS_METRICS_MIN_DT_SEC or dt > GPS_METRICS_MAX_DT_SEC:
+        if dt < GPS_METRICS_MIN_DT_SEC:
+            # Keep the previous baseline so dt can accumulate across fast updates.
+            return
+
+        if dt > GPS_METRICS_MAX_DT_SEC:
+            # Gap too large: re-anchor baseline and wait for next valid segment.
             self.gps_last_calc_ts = ts
             self.gps_last_calc_coord = (latitude, longitude)
             return
@@ -86,6 +99,9 @@ class AppState:
         self.gps_last_calc_coord = (latitude, longitude)
 
     def _update_gps_provider_locked(self):
+        if self.gps_simulation_active:
+            return
+
         now = time.time()
         if self.gps_provider_device is not None:
             current = self.latest_by_device.get(self.gps_provider_device)
@@ -128,11 +144,47 @@ class AppState:
 
             self._update_gps_provider_locked()
 
-            if self.gps_provider_device == device_id and latitude is not None and longitude is not None:
+            if (
+                not self.gps_simulation_active
+                and self.gps_provider_device == device_id
+                and latitude is not None
+                and longitude is not None
+            ):
                 coordinate = (latitude, longitude)
                 if not self.gps_coordinate_history or self.gps_coordinate_history[-1] != coordinate:
                     self.gps_coordinate_history.append(coordinate)
                 self._update_gps_metrics_locked(ts, latitude, longitude)
+
+    def start_gps_simulation(self, latitude: float, longitude: float):
+        with self.lock:
+            self.gps_simulation_active = True
+            self.gps_simulated_coord = (latitude, longitude)
+            self.gps_provider_device = None
+            self.gps_coordinate_history = [self.gps_simulated_coord]
+            self._reset_gps_metrics_locked()
+            self._update_gps_metrics_locked(time.time(), latitude, longitude)
+
+    def update_simulated_gps(self, latitude: float, longitude: float):
+        with self.lock:
+            if not self.gps_simulation_active:
+                return
+
+            coordinate = (latitude, longitude)
+            self.gps_simulated_coord = coordinate
+
+            if not self.gps_coordinate_history or self.gps_coordinate_history[-1] != coordinate:
+                self.gps_coordinate_history.append(coordinate)
+
+            self._update_gps_metrics_locked(time.time(), latitude, longitude)
+
+    def stop_gps_simulation(self, clear_history: bool = True):
+        with self.lock:
+            self.gps_simulation_active = False
+            self.gps_simulated_coord = None
+            self._reset_gps_metrics_locked()
+
+            if clear_history:
+                self.gps_coordinate_history.clear()
 
     def snapshot_devices(self):
         with self.lock:
@@ -175,6 +227,18 @@ class AppState:
 
     def get_gps_snapshot(self):
         with self.lock:
+            if self.gps_simulation_active and self.gps_simulated_coord is not None:
+                latitude, longitude = self.gps_simulated_coord
+                return {
+                    "provider": "simulation",
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "history": list(self.gps_coordinate_history),
+                    "speed_mps": self.gps_speed_mps,
+                    "speed_kmh": self.gps_speed_mps * 3.6 if self.gps_speed_mps is not None else None,
+                    "accel_mps2": self.gps_accel_mps2,
+                }
+
             self._update_gps_provider_locked()
 
             latitude = None

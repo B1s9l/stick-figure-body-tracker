@@ -26,8 +26,6 @@ from config import (
     GPS_MAP_SIZE_RATIO,
     GPS_MAP_RANGE_KM,
     GPS_HISTORY_MAX_POINTS,
-    GPS_SPEED_EMA_ALPHA,
-    GPS_ACCEL_EMA_ALPHA,
     ACCEL_COLOR_MAX_VALUE,
 )
 from brain import update_angles
@@ -116,98 +114,6 @@ def _bpm_to_y(bpm: float, height: int, top_pad: int, bot_pad: int) -> int:
     return int((height - bot_pad) - frac * usable)
 
 
-def simulate_ecg_sample(now: float, bpm: int, previous_bpm: int = None) -> float:
-    """Generate synthetic ECG-like pulse at given time for given BPM.
-    Returns value from -1 to 1, with 0 being baseline (center).
-    Frequency = BPM, amplitude scales with BPM change (5 + |bpm - previous_bpm|).
-    Waveform: spike up, dip down, recover to baseline (realistic heartbeat).
-    """
-    if bpm is None or bpm < 30 or bpm > 200:
-        return 0.0
-
-    beat_duration = 60.0 / bpm
-    phase = (now % beat_duration) / beat_duration
-
-    if previous_bpm is None:
-        previous_bpm = bpm
-
-    amplitude = (5 + abs(bpm - previous_bpm)) / 100.0
-    amplitude = max(0.05, min(1.0, amplitude))
-
-    spike_up_frac = 0.08
-    spike_down_frac = 0.20
-    recovery_frac = 0.30
-
-    if phase < spike_up_frac:
-        progress = phase / spike_up_frac
-        return progress * amplitude
-    elif phase < spike_down_frac:
-        progress = (phase - spike_up_frac) / (spike_down_frac - spike_up_frac)
-        return amplitude * (1.0 - 2.0 * progress)
-    elif phase < recovery_frac:
-        progress = (phase - spike_down_frac) / (recovery_frac - spike_down_frac)
-        return -amplitude * (1.0 - progress)
-    else:
-        return 0.0
-
-
-def draw_ecg_monitor_graph(screen, hr_snapshot: dict, hr_stale: bool, now: float, previous_bpm: int = None):
-    graph_w = max(120, int(WINDOW_W * 0.15))
-    graph_h = max(90, int(WINDOW_H * 0.15))
-    margin = 18
-    graph_x = WINDOW_W - graph_w - margin
-    graph_y = WINDOW_H - graph_h * 2 - margin * 2
-
-    overlay = pygame.Surface((graph_w, graph_h), pygame.SRCALPHA)
-
-    grid_color = (90, 255, 120, 35)
-    frame_color = (90, 255, 120, 90)
-    line_color = (120, 255, 140, 220)
-    baseline_color = (90, 200, 120, 60)
-
-    pygame.draw.rect(overlay, frame_color, (0, 0, graph_w, graph_h), width=1)
-
-    center_y = graph_h // 2
-    pygame.draw.line(overlay, baseline_color, (0, center_y), (graph_w, center_y), width=1)
-
-    for frac in (0.25, 0.5, 0.75):
-        gx = int(graph_w * frac)
-        pygame.draw.line(overlay, grid_color, (gx, 0), (gx, graph_h), width=1)
-
-    bpm = hr_snapshot["bpm"]
-    if not (hr_snapshot["connected"] and not hr_stale and bpm is not None):
-        label_font = pygame.font.SysFont("Arial", 14, bold=True)
-        label_surf = label_font.render("ECG --", True, (150, 170, 150))
-        overlay.blit(label_surf, (6, 4))
-        screen.blit(overlay, (graph_x, graph_y))
-        return
-
-    time_window = 2.5
-    x_scale = graph_w / time_window
-    y_scale = (graph_h - 12) / 2.0 * 5.0
-
-    points = []
-    num_samples = int(graph_w * 6)
-    for i in range(num_samples):
-        t_offset = (i / num_samples) * time_window
-        sample_time = now - time_window + t_offset
-
-        ecg_val = simulate_ecg_sample(sample_time, bpm, previous_bpm)
-        x = int(t_offset * x_scale)
-        y = int(center_y - ecg_val * y_scale)
-        y = max(0, min(graph_h - 1, y))
-        points.append((x, y))
-
-    if len(points) >= 2:
-        pygame.draw.lines(overlay, line_color, False, points, width=2)
-
-    label_font = pygame.font.SysFont("Arial", 14, bold=True)
-    label_surf = label_font.render(f"ECG {bpm}", True, (180, 255, 200))
-    overlay.blit(label_surf, (6, 4))
-
-    screen.blit(overlay, (graph_x, graph_y))
-
-
 def draw_hr_monitor_graph(screen, hr_history: deque, hr_snapshot: dict, hr_stale: bool, now: float):
     graph_w = max(120, int(WINDOW_W * 0.15))
     graph_h = max(90, int(WINDOW_H * 0.15))
@@ -281,18 +187,6 @@ def _latlon_to_km(lat: float, lon: float, center_lat: float, center_lon: float):
     return d_lon_km, d_lat_km
 
 
-def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371000.0
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-
-    a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0) ** 2
-    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-    return r * c
-
-
 def _map_point_from_latlon(lat: float, lon: float, center_lat: float, center_lon: float, graph_w: int, graph_h: int):
     d_lon_km, d_lat_km = _latlon_to_km(lat, lon, center_lat, center_lon)
     half_range = GPS_MAP_RANGE_KM / 2.0
@@ -319,7 +213,7 @@ def _simulate_ski_point(start_lat: float, start_lon: float, progress: float):
     return lat, lon
 
 
-def draw_gps_map(screen, app_state: AppState, now: float, gps_override=None, sim_state="off"):
+def draw_gps_map(screen, app_state: AppState, now: float, sim_state="off"):
     graph_w = max(260, int(WINDOW_W * GPS_MAP_SIZE_RATIO))
     graph_h = max(180, int(WINDOW_H * GPS_MAP_SIZE_RATIO))
     margin = 18
@@ -348,31 +242,21 @@ def draw_gps_map(screen, app_state: AppState, now: float, gps_override=None, sim
     pygame.draw.line(overlay, grid_color, (cx, 0), (cx, graph_h), width=1)
     pygame.draw.line(overlay, grid_color, (0, cy), (graph_w, cy), width=1)
 
-    if gps_override is not None:
-        provider = "simulation"
-        latitude = gps_override["latitude"]
-        longitude = gps_override["longitude"]
-        history = gps_override["history"]
-        speed_mps = gps_override.get("speed_mps")
-        speed_kmh = gps_override.get("speed_kmh")
-        accel_mps2 = gps_override.get("accel_mps2")
-        now_connected = True
-    else:
-        gps = app_state.get_gps_snapshot()
-        provider = gps["provider"]
-        latitude = gps["latitude"]
-        longitude = gps["longitude"]
-        history = gps["history"]
-        speed_mps = gps.get("speed_mps")
-        speed_kmh = gps.get("speed_kmh")
-        accel_mps2 = gps.get("accel_mps2")
+    gps = app_state.get_gps_snapshot()
+    provider = gps["provider"]
+    latitude = gps["latitude"]
+    longitude = gps["longitude"]
+    history = gps["history"]
+    speed_mps = gps.get("speed_mps")
+    speed_kmh = gps.get("speed_kmh")
+    accel_mps2 = gps.get("accel_mps2")
 
-        now_connected = False
-        if provider is not None:
-            snapshot = app_state.snapshot_devices()
-            sample = snapshot.get(provider)
-            if sample is not None:
-                now_connected = (now - sample.last_seen) < 2.0
+    now_connected = provider == "simulation"
+    if provider is not None and provider != "simulation":
+        snapshot = app_state.snapshot_devices()
+        sample = snapshot.get(provider)
+        if sample is not None:
+            now_connected = (now - sample.last_seen) < 2.0
 
     clear_w = 58
     clear_h = 24
@@ -471,8 +355,8 @@ def draw_status_panel(screen, font_small, font_medium, app_state: AppState):
     draw_ops = []
     y = panel_y + panel_padding
 
-    draw_ops.append((f"Flask listening on http://{HOST}:{PORT}/sensor", panel_x + panel_padding, y, font_small, TEXT_COLOR))
-    y += row_step
+    #draw_ops.append((f"Flask listening on http://{HOST}:{PORT}/sensor", panel_x + panel_padding, y, font_small, TEXT_COLOR))
+    #y += row_step
 
     draw_ops.append(("Limb status", panel_x + panel_padding, y, font_medium, TEXT_COLOR))
     y += heading_step
@@ -522,6 +406,7 @@ def draw_status_panel(screen, font_small, font_medium, app_state: AppState):
         hr_color = DISCONNECTED_COLOR
 
     draw_ops.append((hr_text, panel_x + panel_padding, y, font_small, hr_color))
+    y += row_step
 
     panel_h = (y - panel_y) + panel_padding + 4
     panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
@@ -529,7 +414,7 @@ def draw_status_panel(screen, font_small, font_medium, app_state: AppState):
     pygame.draw.rect(screen, (180, 180, 180), panel_rect, width=2)
 
     for text, tx, ty, font, color in draw_ops:
-        draw_text(screen, text, tx, ty, font, color)
+        draw_text(screen, text, tx, ty, font, color)    
 
 
 def _lerp_color(color_a, color_b, t: float):
@@ -681,7 +566,6 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
     font_medium = pygame.font.SysFont("Arial", 12)
     hr_history = deque()
     history_window_sec = 10.0
-    previous_bpm = None
     clear_gps_rect = None
     sim_gps_rect = None
     sim_state = "off"
@@ -690,12 +574,6 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
     sim_start_lat = None
     sim_start_lon = None
     sim_current = None
-    sim_history = []
-    sim_speed_mps = None
-    sim_accel_mps2 = None
-    sim_prev_speed_mps = None
-    sim_last_metric_time = None
-    sim_prev_coord = None
 
     last_filter_update = 0.0
     running = True
@@ -712,10 +590,7 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
                 if clear_gps_rect is not None:
                     x, y, w, h = clear_gps_rect
                     if x <= mx <= x + w and y <= my <= y + h:
-                        if sim_state == "off":
-                            app_state.clear_gps_history()
-                        else:
-                            sim_history = [sim_current] if sim_current is not None else []
+                        app_state.clear_gps_history()
 
                 if sim_gps_rect is not None:
                     x, y, w, h = sim_gps_rect
@@ -727,24 +602,13 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
                             sim_start_time = time.time()
                             sim_last_sample_time = 0.0
                             sim_current = (sim_start_lat, sim_start_lon)
-                            sim_history = [sim_current]
-                            sim_speed_mps = 0.0
-                            sim_accel_mps2 = 0.0
-                            sim_prev_speed_mps = 0.0
-                            sim_last_metric_time = sim_start_time
-                            sim_prev_coord = sim_current
+                            app_state.start_gps_simulation(sim_start_lat, sim_start_lon)
                             sim_state = "running"
                         elif sim_state == "finished":
                             sim_state = "off"
                             sim_start_time = None
                             sim_current = None
-                            sim_history = []
-                            sim_speed_mps = None
-                            sim_accel_mps2 = None
-                            sim_prev_speed_mps = None
-                            sim_last_metric_time = None
-                            sim_prev_coord = None
-                            app_state.clear_gps_history()
+                            app_state.stop_gps_simulation(clear_history=True)
 
         now = time.time()
         if now - last_filter_update >= filter_interval_sec:
@@ -759,31 +623,7 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
             if now - sim_last_sample_time >= 0.04:
                 lat, lon = _simulate_ski_point(sim_start_lat, sim_start_lon, progress)
                 sim_current = (lat, lon)
-                if not sim_history or sim_history[-1] != sim_current:
-                    sim_history.append(sim_current)
-
-                if sim_last_metric_time is not None and sim_prev_coord is not None:
-                    dt = max(1e-6, now - sim_last_metric_time)
-                    prev_lat, prev_lon = sim_prev_coord
-                    distance_m = _haversine_m(prev_lat, prev_lon, lat, lon)
-                    inst_speed = distance_m / dt
-
-                    if sim_speed_mps is None:
-                        sim_speed_mps = inst_speed
-                        sim_prev_speed_mps = inst_speed
-                        sim_accel_mps2 = 0.0
-                    else:
-                        prev_speed = sim_speed_mps
-                        sim_speed_mps = prev_speed + (inst_speed - prev_speed) * GPS_SPEED_EMA_ALPHA
-                        inst_accel = (sim_speed_mps - (sim_prev_speed_mps if sim_prev_speed_mps is not None else prev_speed)) / dt
-                        if sim_accel_mps2 is None:
-                            sim_accel_mps2 = inst_accel
-                        else:
-                            sim_accel_mps2 = sim_accel_mps2 + (inst_accel - sim_accel_mps2) * GPS_ACCEL_EMA_ALPHA
-                        sim_prev_speed_mps = sim_speed_mps
-
-                sim_prev_coord = sim_current
-                sim_last_metric_time = now
+                app_state.update_simulated_gps(lat, lon)
                 sim_last_sample_time = now
 
             if progress >= 1.0:
@@ -793,31 +633,16 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
         draw_stick_figure(screen, app_state)
         draw_status_panel(screen, font_small, font_medium, app_state)
 
-        gps_override = None
-        if sim_state in ("running", "finished") and sim_current is not None:
-            gps_override = {
-                "latitude": sim_current[0],
-                "longitude": sim_current[1],
-                "history": list(sim_history),
-                "speed_mps": sim_speed_mps,
-                "speed_kmh": sim_speed_mps * 3.6 if sim_speed_mps is not None else None,
-                "accel_mps2": sim_accel_mps2,
-            }
-
         clear_gps_rect, sim_gps_rect = draw_gps_map(
             screen,
             app_state,
             now,
-            gps_override=gps_override,
             sim_state=sim_state,
         )
 
         hr = app_state.get_hr_snapshot()
         hr_stale = (now - hr["last_seen"]) > HR_STALE_TIMEOUT_SEC if hr["last_seen"] else True
         update_hr_history(hr_history, now, hr, hr_stale, history_window_sec)
-        draw_ecg_monitor_graph(screen, hr, hr_stale, now, previous_bpm)
-        if hr["bpm"] is not None and hr["connected"] and not hr_stale:
-            previous_bpm = hr["bpm"]
         draw_hr_monitor_graph(screen, hr_history, hr, hr_stale, now)
 
         pygame.display.flip()

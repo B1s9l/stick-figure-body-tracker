@@ -97,7 +97,7 @@ HR_STALE_TIMEOUT_SEC = 4.0
 
 # GPS tuning
 GPS_MAP_SIZE_RATIO = 0.40
-GPS_MAP_RANGE_KM = 0.01 # default 5.0
+GPS_MAP_RANGE_KM = 1.0 # default 5.0
 GPS_HISTORY_MAX_POINTS = 4000
 
 # GPS-derived kinematics tuning
