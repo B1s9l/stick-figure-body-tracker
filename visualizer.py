@@ -1,6 +1,10 @@
 import math
+import os
+import subprocess
+import sys
 import time
 from collections import deque
+from pathlib import Path
 import pygame
 
 from config import (
@@ -27,9 +31,94 @@ from config import (
     GPS_MAP_RANGE_KM,
     GPS_HISTORY_MAX_POINTS,
     ACCEL_COLOR_MAX_VALUE,
+    LOGS_DIR,
+    LOG_FILE_PREFIX,
+    LOG_FILE_EXTENSION,
 )
 from brain import update_angles
 from state import AppState
+
+
+def _log_file_sort_key(path: Path):
+    stem = path.stem
+    if stem.startswith(LOG_FILE_PREFIX):
+        suffix = stem[len(LOG_FILE_PREFIX):]
+        try:
+            return (1, int(suffix), path.stat().st_mtime)
+        except ValueError:
+            pass
+    return (0, 0, path.stat().st_mtime)
+
+
+def list_log_files() -> list:
+    log_dir = Path(__file__).resolve().parent / LOGS_DIR
+    if not log_dir.exists():
+        return []
+
+    files = list(log_dir.glob(f"*{LOG_FILE_EXTENSION}"))
+    files.sort(key=_log_file_sort_key, reverse=True)
+    return [str(path) for path in files]
+
+
+def launch_replay_process(log_file_path: str = ""):
+    project_root = Path(__file__).resolve().parent
+    main_path = project_root / "main.py"
+
+    args = [sys.executable, str(main_path), "--replay"]
+    if log_file_path:
+        args.extend(["--log-file", log_file_path])
+
+    try:
+        subprocess.Popen(args, cwd=str(project_root))
+        return True
+    except Exception as exc:
+        print(f"[Replay] launch failed: {exc}")
+        return False
+
+
+def draw_recording_controls(screen, app_state: AppState):
+    panel_x = WINDOW_W - 340
+    panel_y = 20
+    panel_w = 320
+    panel_h = 92
+    panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
+
+    button_h = 32
+    record_rect = pygame.Rect(panel_x + 12, panel_y + 10, 140, button_h)
+    logs_rect = pygame.Rect(panel_x + 168, panel_y + 10, 140, button_h)
+
+    pygame.draw.rect(screen, (20, 20, 20), panel_rect)
+    pygame.draw.rect(screen, (180, 180, 180), panel_rect, width=2)
+
+    status = app_state.get_recording_status()
+    is_recording = status["active"]
+    log_path = status["path"]
+
+    record_label = "Stop" if is_recording else "Record"
+    record_bg = (150, 55, 55) if is_recording else (55, 120, 70)
+    pygame.draw.rect(screen, record_bg, record_rect, border_radius=4)
+    pygame.draw.rect(screen, (220, 220, 220), record_rect, width=1, border_radius=4)
+
+    logs_bg = (65, 90, 130)
+    pygame.draw.rect(screen, logs_bg, logs_rect, border_radius=4)
+    pygame.draw.rect(screen, (220, 220, 220), logs_rect, width=1, border_radius=4)
+
+    button_font = pygame.font.SysFont("Arial", 14, bold=True)
+    meta_font = pygame.font.SysFont("Arial", 12)
+    screen.blit(button_font.render(record_label, True, (245, 245, 245)), (record_rect.x + 45, record_rect.y + 7))
+    screen.blit(button_font.render("See logs", True, (245, 245, 245)), (logs_rect.x + 34, logs_rect.y + 7))
+
+    if log_path:
+        short_path = os.path.basename(log_path)
+        meta_text = f"active: {short_path}" if is_recording else f"last: {short_path}"
+        meta_color = (210, 230, 210) if is_recording else (210, 210, 210)
+    else:
+        meta_text = "no log file"
+        meta_color = (190, 190, 190)
+
+    screen.blit(meta_font.render(meta_text, True, meta_color), (panel_x + 12, panel_y + 56))
+
+    return record_rect, logs_rect
 
 
 def endpoint_from_angle(start, length, angle_deg):
@@ -586,13 +675,15 @@ def draw_stick_figure(screen, app_state: AppState):
 def run_visualizer(app_state: AppState, filter_interval_sec: float):
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
-    pygame.display.set_caption("Stick Figure IMU Prototype")
+    pygame.display.set_caption("Body Tracker Prototype")
     clock = pygame.time.Clock()
 
     font_small = pygame.font.SysFont("Arial", 10)
     font_medium = pygame.font.SysFont("Arial", 12)
     hr_history = deque()
     history_window_sec = 10.0
+    record_rect = None
+    logs_rect = None
     clear_gps_rect = None
     sim_gps_rect = None
     sim_state = "off"
@@ -613,6 +704,24 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
                 running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+
+                if record_rect is not None:
+                    x, y, w, h = record_rect
+                    if x <= mx <= x + w and y <= my <= y + h:
+                        status = app_state.get_recording_status()
+                        if status["active"]:
+                            app_state.stop_recording()
+                        else:
+                            app_state.start_recording()
+                        continue
+
+                if logs_rect is not None:
+                    x, y, w, h = logs_rect
+                    if x <= mx <= x + w and y <= my <= y + h:
+                        log_files = list_log_files()
+                        selected = log_files[0] if log_files else ""
+                        launch_replay_process(selected)
+                        continue
 
                 if clear_gps_rect is not None:
                     x, y, w, h = clear_gps_rect
@@ -658,6 +767,7 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
 
         screen.fill(BG_COLOR)
         draw_stick_figure(screen, app_state)
+        record_rect, logs_rect = draw_recording_controls(screen, app_state)
         draw_status_panel(screen, font_small, font_medium, app_state)
 
         clear_gps_rect, sim_gps_rect = draw_gps_map(
@@ -674,4 +784,5 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
 
         pygame.display.flip()
 
+    app_state.stop_recording()
     pygame.quit()

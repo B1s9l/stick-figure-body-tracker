@@ -97,7 +97,7 @@ HR_STALE_TIMEOUT_SEC = 4.0
 
 # GPS tuning
 GPS_MAP_SIZE_RATIO = 0.40
-GPS_MAP_RANGE_KM = 1.0 # default 5.0
+GPS_MAP_RANGE_KM = 3.0 # default 5.0
 GPS_HISTORY_MAX_POINTS = 4000
 
 # GPS-derived kinematics tuning
@@ -108,3 +108,10 @@ GPS_ACCEL_EMA_ALPHA = 0.22
 
 # Limb color heat mapping: accel_abs_avg / ACCEL_COLOR_MAX_VALUE
 ACCEL_COLOR_MAX_VALUE = 1.0
+
+# Logging and replay
+LOGS_DIR = "logs"
+LOG_FILE_PREFIX = "log_file_"
+LOG_FILE_EXTENSION = ".jsonl"
+LOG_QUEUE_MAXSIZE = 10000
+REPLAY_FPS = 60

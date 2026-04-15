@@ -12,6 +12,7 @@ from config import (
     GPS_SPEED_EMA_ALPHA,
     GPS_ACCEL_EMA_ALPHA,
 )
+from logging_runtime import SessionLogger
 
 
 @dataclass
@@ -27,6 +28,9 @@ class DeviceSample:
 class AppState:
     def __init__(self):
         self.lock = threading.Lock()
+        self.logger = SessionLogger()
+        self.recording_active = False
+        self.current_log_path: Optional[str] = None
 
         self.latest_by_device: Dict[str, DeviceSample] = {}
         self.smoothed_angles_deg: Dict[str, float] = {
@@ -46,6 +50,40 @@ class AppState:
         self.gps_last_calc_coord: Optional[Tuple[float, float]] = None
         self.gps_speed_mps: Optional[float] = None
         self.gps_accel_mps2: Optional[float] = None
+
+    def _log_event_locked(self, ts: float, event_type: str, payload: Dict):
+        if not self.recording_active:
+            return
+
+        event = {"ts": ts, "type": event_type}
+        event.update(payload)
+        self.logger.log_event(event)
+
+    def start_recording(self):
+        with self.lock:
+            if self.recording_active and self.current_log_path is not None:
+                return self.current_log_path
+
+            log_path = self.logger.start()
+            self.recording_active = True
+            self.current_log_path = log_path
+            return log_path
+
+    def stop_recording(self):
+        with self.lock:
+            if not self.recording_active:
+                return
+            self.recording_active = False
+            self.current_log_path = None
+
+        self.logger.stop()
+
+    def get_recording_status(self):
+        with self.lock:
+            return {
+                "active": self.recording_active,
+                "path": self.current_log_path,
+            }
 
     def _reset_gps_metrics_locked(self):
         self.gps_last_calc_ts = None
@@ -142,6 +180,18 @@ class AppState:
                 accel_abs_avg=accel_abs_avg,
             )
 
+            self._log_event_locked(
+                ts,
+                "sensor",
+                {
+                    "device_id": device_id,
+                    "pitch_rad": pitch_rad,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "accel_abs_avg": accel_abs_avg,
+                },
+            )
+
             self._update_gps_provider_locked()
 
             if (
@@ -211,10 +261,12 @@ class AppState:
 
     def update_hr_bpm(self, bpm: int):
         with self.lock:
+            now = time.time()
             self.hr_connected = True
             self.hr_bpm = bpm
-            self.hr_last_seen = time.time()
+            self.hr_last_seen = now
             self.hr_status_text = "connected"
+            self._log_event_locked(now, "hr", {"bpm": bpm})
 
     def get_hr_snapshot(self):
         with self.lock:
