@@ -26,6 +26,9 @@ from config import (
     GPS_MAP_SIZE_RATIO,
     GPS_MAP_RANGE_KM,
     GPS_HISTORY_MAX_POINTS,
+    GPS_SPEED_EMA_ALPHA,
+    GPS_ACCEL_EMA_ALPHA,
+    ACCEL_COLOR_MAX_VALUE,
 )
 from brain import update_angles
 from state import AppState
@@ -278,6 +281,18 @@ def _latlon_to_km(lat: float, lon: float, center_lat: float, center_lon: float):
     return d_lon_km, d_lat_km
 
 
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371000.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+
+    a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0) ** 2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return r * c
+
+
 def _map_point_from_latlon(lat: float, lon: float, center_lat: float, center_lon: float, graph_w: int, graph_h: int):
     d_lon_km, d_lat_km = _latlon_to_km(lat, lon, center_lat, center_lon)
     half_range = GPS_MAP_RANGE_KM / 2.0
@@ -338,6 +353,9 @@ def draw_gps_map(screen, app_state: AppState, now: float, gps_override=None, sim
         latitude = gps_override["latitude"]
         longitude = gps_override["longitude"]
         history = gps_override["history"]
+        speed_mps = gps_override.get("speed_mps")
+        speed_kmh = gps_override.get("speed_kmh")
+        accel_mps2 = gps_override.get("accel_mps2")
         now_connected = True
     else:
         gps = app_state.get_gps_snapshot()
@@ -345,6 +363,9 @@ def draw_gps_map(screen, app_state: AppState, now: float, gps_override=None, sim
         latitude = gps["latitude"]
         longitude = gps["longitude"]
         history = gps["history"]
+        speed_mps = gps.get("speed_mps")
+        speed_kmh = gps.get("speed_kmh")
+        accel_mps2 = gps.get("accel_mps2")
 
         now_connected = False
         if provider is not None:
@@ -400,6 +421,18 @@ def draw_gps_map(screen, app_state: AppState, now: float, gps_override=None, sim
         coord_text = "lat ---, lon ---"
     overlay.blit(meta_font.render(coord_text, True, text_color), (8, 44))
 
+    if speed_mps is not None and speed_kmh is not None:
+        speed_text = f"speed {speed_mps:5.2f} m/s ({speed_kmh:5.1f} km/h)"
+    else:
+        speed_text = "speed --"
+    overlay.blit(meta_font.render(speed_text, True, text_color), (8, 62))
+
+    if accel_mps2 is not None:
+        accel_text = f"accel {accel_mps2:+6.2f} m/s2"
+    else:
+        accel_text = "accel --"
+    overlay.blit(meta_font.render(accel_text, True, text_color), (8, 80))
+
     pygame.draw.rect(overlay, (200, 210, 235, 140), (clear_x, clear_y, clear_w, clear_h), width=1)
     clear_label = meta_font.render("Clear", True, (220, 230, 245))
     clear_label_rect = clear_label.get_rect(center=(clear_x + clear_w // 2, clear_y + clear_h // 2))
@@ -430,12 +463,21 @@ def draw_gps_map(screen, app_state: AppState, now: float, gps_override=None, sim
 def draw_status_panel(screen, font_small, font_medium, app_state: AppState):
     panel_x = 20
     panel_y = 20
+    panel_w = min(int(WINDOW_W * 0.4), WINDOW_W - (panel_x * 2))
+    panel_padding = 12
+    row_step = max(12, font_small.get_linesize() + 2)
+    heading_step = max(14, font_medium.get_linesize() + 2)
 
-    draw_text(screen, f"Flask listening on http://{HOST}:{PORT}/sensor", panel_x, panel_y, font_small)
-    draw_text(screen, "Limb status", panel_x, panel_y + 30, font_medium)
+    draw_ops = []
+    y = panel_y + panel_padding
+
+    draw_ops.append((f"Flask listening on http://{HOST}:{PORT}/sensor", panel_x + panel_padding, y, font_small, TEXT_COLOR))
+    y += row_step
+
+    draw_ops.append(("Limb status", panel_x + panel_padding, y, font_medium, TEXT_COLOR))
+    y += heading_step
 
     snapshot = app_state.snapshot_devices()
-    y = panel_y + 70
     now = time.time()
 
     limb_to_device = {limb: device for device, limb in DEVICE_TO_LIMB.items()}
@@ -446,11 +488,13 @@ def draw_status_panel(screen, font_small, font_medium, app_state: AppState):
         connected = is_connected(sample, now)
 
         if connected:
+            accel_abs_avg = getattr(sample, "accel_abs_avg", None)
+            accel_text = f" | accel={accel_abs_avg:.2f}" if accel_abs_avg is not None else ""
             if is_mirrored:
                 source_limb = LEFT_LIMB_MIRROR_SOURCE[limb]
-                text = f"{limb} | mirror({source_limb}) via {device_id} | pitch={sample.pitch_rad:+.3f}"
+                text = f"{limb} | mirror({source_limb}) via {device_id} | pitch={sample.pitch_rad:+.3f}{accel_text}"
             else:
-                text = f"{limb} | {device_id} | pitch={sample.pitch_rad:+.3f}"
+                text = f"{limb} | {device_id} | pitch={sample.pitch_rad:+.3f}{accel_text}"
             color = CONNECTED_COLOR
         else:
             if is_mirrored:
@@ -460,12 +504,12 @@ def draw_status_panel(screen, font_small, font_medium, app_state: AppState):
                 text = f"{limb}"
             color = DISCONNECTED_COLOR
 
-        draw_text(screen, text, panel_x, y, font_small, color)
-        y += 28
+        draw_ops.append((text, panel_x + panel_padding, y, font_small, color))
+        y += row_step
 
-    y += 14
-    draw_text(screen, "Heart rate", panel_x, y, font_medium)
-    y += 32
+    y += max(8, row_step // 2)
+    draw_ops.append(("Heart rate", panel_x + panel_padding, y, font_medium, TEXT_COLOR))
+    y += heading_step
 
     hr = app_state.get_hr_snapshot()
     hr_stale = (time.time() - hr["last_seen"]) > HR_STALE_TIMEOUT_SEC if hr["last_seen"] else True
@@ -477,11 +521,55 @@ def draw_status_panel(screen, font_small, font_medium, app_state: AppState):
         hr_text = f"Garmin HRM | {hr['status_text']}"
         hr_color = DISCONNECTED_COLOR
 
-    draw_text(screen, hr_text, panel_x, y, font_small, hr_color)
+    draw_ops.append((hr_text, panel_x + panel_padding, y, font_small, hr_color))
+
+    panel_h = (y - panel_y) + panel_padding + 4
+    panel_rect = pygame.Rect(panel_x, panel_y, panel_w, panel_h)
+    pygame.draw.rect(screen, (20, 20, 20), panel_rect)
+    pygame.draw.rect(screen, (180, 180, 180), panel_rect, width=2)
+
+    for text, tx, ty, font, color in draw_ops:
+        draw_text(screen, text, tx, ty, font, color)
+
+
+def _lerp_color(color_a, color_b, t: float):
+    t_clamped = max(0.0, min(1.0, t))
+    return (
+        int(color_a[0] + (color_b[0] - color_a[0]) * t_clamped),
+        int(color_a[1] + (color_b[1] - color_a[1]) * t_clamped),
+        int(color_a[2] + (color_b[2] - color_a[2]) * t_clamped),
+    )
+
+
+def _limb_color_from_accel(limb: str, snapshot: dict, now: float, limb_to_device: dict):
+    light_blue = (150, 210, 255)
+    dark_red = (120, 30, 30)
+
+    device_id, _ = get_status_source_for_limb(limb, limb_to_device)
+    sample = snapshot.get(device_id) if device_id else None
+
+    if not is_connected(sample, now):
+        return light_blue
+
+    accel_abs_avg = getattr(sample, "accel_abs_avg", None)
+    if accel_abs_avg is None:
+        return light_blue
+
+    # Map [0, ACCEL_COLOR_MAX_VALUE+] to [light_blue, dark_red].
+    intensity = max(0.0, min(1.0, accel_abs_avg / max(1e-6, ACCEL_COLOR_MAX_VALUE)))
+    return _lerp_color(light_blue, dark_red, intensity)
 
 
 def draw_stick_figure(screen, app_state: AppState):
     angles = app_state.get_smoothed_angles_copy()
+    snapshot = app_state.snapshot_devices()
+    now = time.time()
+    limb_to_device = {limb: device for device, limb in DEVICE_TO_LIMB.items()}
+
+    limb_colors = {
+        limb: _limb_color_from_accel(limb, snapshot, now, limb_to_device)
+        for limb in ALL_LIMBS
+    }
 
     cx = WINDOW_W // 2 + 170
     top_y = 170
@@ -545,17 +633,17 @@ def draw_stick_figure(screen, app_state: AppState):
     pygame.draw.line(screen, (180, 180, 180), left_shoulder, right_shoulder, width=3)
     pygame.draw.line(screen, (180, 180, 180), left_hip, right_hip, width=3)
 
-    pygame.draw.line(screen, (255, 180, 120), right_shoulder, upperarm_right_end, width=6)
-    pygame.draw.line(screen, (255, 140, 80), upperarm_right_end, forearm_right_end, width=6)
+    pygame.draw.line(screen, limb_colors["upperarm_right"], right_shoulder, upperarm_right_end, width=6)
+    pygame.draw.line(screen, limb_colors["forearm_right"], upperarm_right_end, forearm_right_end, width=6)
 
-    pygame.draw.line(screen, (160, 200, 255), left_shoulder, upperarm_left_end, width=6)
-    pygame.draw.line(screen, (100, 180, 255), upperarm_left_end, forearm_left_end, width=6)
+    pygame.draw.line(screen, limb_colors["upperarm_left"], left_shoulder, upperarm_left_end, width=6)
+    pygame.draw.line(screen, limb_colors["forearm_left"], upperarm_left_end, forearm_left_end, width=6)
 
-    pygame.draw.line(screen, (255, 220, 120), right_hip, upperleg_right_end, width=7)
-    pygame.draw.line(screen, (240, 190, 90), upperleg_right_end, lowerleg_right_end, width=7)
+    pygame.draw.line(screen, limb_colors["upperleg_right"], right_hip, upperleg_right_end, width=7)
+    pygame.draw.line(screen, limb_colors["lowerleg_right"], upperleg_right_end, lowerleg_right_end, width=7)
 
-    pygame.draw.line(screen, (180, 255, 180), left_hip, upperleg_left_end, width=7)
-    pygame.draw.line(screen, (130, 220, 130), upperleg_left_end, lowerleg_left_end, width=7)
+    pygame.draw.line(screen, limb_colors["upperleg_left"], left_hip, upperleg_left_end, width=7)
+    pygame.draw.line(screen, limb_colors["lowerleg_left"], upperleg_left_end, lowerleg_left_end, width=7)
 
     joint_points = [
         neck,
@@ -589,8 +677,8 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
     pygame.display.set_caption("Stick Figure IMU Prototype")
     clock = pygame.time.Clock()
 
-    font_small = pygame.font.SysFont("Arial", 20)
-    font_medium = pygame.font.SysFont("Arial", 24)
+    font_small = pygame.font.SysFont("Arial", 10)
+    font_medium = pygame.font.SysFont("Arial", 12)
     hr_history = deque()
     history_window_sec = 10.0
     previous_bpm = None
@@ -603,6 +691,11 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
     sim_start_lon = None
     sim_current = None
     sim_history = []
+    sim_speed_mps = None
+    sim_accel_mps2 = None
+    sim_prev_speed_mps = None
+    sim_last_metric_time = None
+    sim_prev_coord = None
 
     last_filter_update = 0.0
     running = True
@@ -635,12 +728,22 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
                             sim_last_sample_time = 0.0
                             sim_current = (sim_start_lat, sim_start_lon)
                             sim_history = [sim_current]
+                            sim_speed_mps = 0.0
+                            sim_accel_mps2 = 0.0
+                            sim_prev_speed_mps = 0.0
+                            sim_last_metric_time = sim_start_time
+                            sim_prev_coord = sim_current
                             sim_state = "running"
                         elif sim_state == "finished":
                             sim_state = "off"
                             sim_start_time = None
                             sim_current = None
                             sim_history = []
+                            sim_speed_mps = None
+                            sim_accel_mps2 = None
+                            sim_prev_speed_mps = None
+                            sim_last_metric_time = None
+                            sim_prev_coord = None
                             app_state.clear_gps_history()
 
         now = time.time()
@@ -658,6 +761,29 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
                 sim_current = (lat, lon)
                 if not sim_history or sim_history[-1] != sim_current:
                     sim_history.append(sim_current)
+
+                if sim_last_metric_time is not None and sim_prev_coord is not None:
+                    dt = max(1e-6, now - sim_last_metric_time)
+                    prev_lat, prev_lon = sim_prev_coord
+                    distance_m = _haversine_m(prev_lat, prev_lon, lat, lon)
+                    inst_speed = distance_m / dt
+
+                    if sim_speed_mps is None:
+                        sim_speed_mps = inst_speed
+                        sim_prev_speed_mps = inst_speed
+                        sim_accel_mps2 = 0.0
+                    else:
+                        prev_speed = sim_speed_mps
+                        sim_speed_mps = prev_speed + (inst_speed - prev_speed) * GPS_SPEED_EMA_ALPHA
+                        inst_accel = (sim_speed_mps - (sim_prev_speed_mps if sim_prev_speed_mps is not None else prev_speed)) / dt
+                        if sim_accel_mps2 is None:
+                            sim_accel_mps2 = inst_accel
+                        else:
+                            sim_accel_mps2 = sim_accel_mps2 + (inst_accel - sim_accel_mps2) * GPS_ACCEL_EMA_ALPHA
+                        sim_prev_speed_mps = sim_speed_mps
+
+                sim_prev_coord = sim_current
+                sim_last_metric_time = now
                 sim_last_sample_time = now
 
             if progress >= 1.0:
@@ -673,6 +799,9 @@ def run_visualizer(app_state: AppState, filter_interval_sec: float):
                 "latitude": sim_current[0],
                 "longitude": sim_current[1],
                 "history": list(sim_history),
+                "speed_mps": sim_speed_mps,
+                "speed_kmh": sim_speed_mps * 3.6 if sim_speed_mps is not None else None,
+                "accel_mps2": sim_accel_mps2,
             }
 
         clear_gps_rect, sim_gps_rect = draw_gps_map(
